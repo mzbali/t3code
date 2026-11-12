@@ -30,10 +30,14 @@ jobs:
           sparse-checkout-cone-mode: false
 
       - name: Compare with main
+        env:
+          BASE_REF: ${{ github.base_ref }}
         run: |
-          git fetch --quiet --depth=1 origin main
+          # A pull request into an older default branch still has to be measured
+          # against the branch it started from. Growth in that base is not this diff.
+          git fetch --quiet --depth=1 origin "$BASE_REF"
           if ! git cat-file -e "FETCH_HEAD:$BUDGET" 2>/dev/null; then
-            echo "main has no agent context budget yet."
+            echo "$BASE_REF has no agent context budget yet."
             exit 0
           fi
           git show "FETCH_HEAD:$BUDGET" > "$RUNNER_TEMP/main.json"
