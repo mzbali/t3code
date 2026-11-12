@@ -249,6 +249,32 @@ describe("claudeRateLimitEventToUpdate", () => {
     });
   });
 
+  it("keeps an ISO or window reset on the streamed window", () => {
+    const iso = "2026-11-12T23:15:00.000Z";
+    expect(
+      claudeRateLimitEventToUpdate(
+        {
+          status: "rejected",
+          rateLimitType: "five_hour",
+          utilization: 1,
+          resetsAt: iso as unknown as number,
+        },
+        noNames,
+      )?.windows[0]?.resetsAt,
+    ).toBe(iso);
+    expect(
+      claudeRateLimitEventToUpdate(
+        {
+          status: "rejected",
+          rateLimitType: "five_hour",
+          utilization: 1,
+          window: { resets_at: iso },
+        } as never,
+        noNames,
+      )?.windows[0]?.resetsAt,
+    ).toBe(iso);
+  });
+
   it("lands the streamed overage-included bucket on the row the probe named", () => {
     const event = {
       status: "allowed",
