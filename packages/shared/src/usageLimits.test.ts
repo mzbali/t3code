@@ -13,6 +13,7 @@ import {
   displayLimitWindows,
   cursorUsageWindowDetails,
   collectProviderUsageLimits,
+  composerUsageResetFromPanel,
   sameUsageLimitCommandCoverage,
   withUsageLimitsCommands,
   collectLimitAccounts,
@@ -25,6 +26,7 @@ import {
   paceRemainingPercent,
   usesChatGptSharing,
   resolveNewThreadModelSelection,
+  usageResetAtFromRateLimit,
 } from "./usageLimits.ts";
 
 const now = Date.parse("2026-09-03T12:00:00.000Z");
@@ -208,6 +210,122 @@ describe("new thread model fallback", () => {
       ).toEqual(usesFallback ? fallback : defaultSelection);
     },
   );
+});
+
+describe("claude quota reset", () => {
+  const checkedAt = "2026-11-12T22:00:00.000Z";
+  const now = Date.parse("2026-11-12T22:45:00.000Z");
+  const sessionReset = "2026-11-12T23:15:00.000Z";
+  const claude = ProviderDriverKind.make("claudeAgent");
+  const instanceId = ProviderInstanceId.make("claudeAgent_pool_ab");
+  const session = {
+    id: "five_hour",
+    kind: "session" as const,
+    label: "Session",
+    usedPercent: 100,
+    resetsAt: sessionReset,
+    windowDurationMins: 300,
+  };
+  const weekly = {
+    id: "seven_day",
+    kind: "weekly" as const,
+    label: "Weekly",
+    usedPercent: 88,
+    resetsAt: "2026-11-17T09:00:00.000Z",
+    windowDurationMins: 10080,
+  };
+  const fable = {
+    id: "seven_day_fable",
+    kind: "weekly" as const,
+    label: "Weekly · Fable",
+    usedPercent: 0,
+    resetsAt: "2026-11-16T10:00:00.000Z",
+    windowDurationMins: 10080,
+  };
+  const panel = provider({
+    instanceId,
+    driver: claude,
+    usageLimits: { checkedAt, windows: [session, weekly, fable] },
+  });
+  const sources = [
+    {
+      id: UsageLimitSourceId.make("cliproxy_local"),
+      kind: "cliproxy" as const,
+      label: "CLIProxy",
+      checkedAt,
+      accounts: [
+        {
+          id: "mg",
+          driver: claude,
+          usageLimits: {
+            checkedAt,
+            windows: [{ ...session, resetsAt: undefined }, fable],
+          },
+        },
+        {
+          id: "jg",
+          driver: claude,
+          usageLimits: { checkedAt, windows: [session, weekly, fable] },
+        },
+      ],
+    },
+  ];
+
+  it("picks the exhausted session window and leaves Fable weekly available", () => {
+    expect(exhaustedUsageWindow(panel, now, "claude-opus-4-6")?.id).toBe("five_hour");
+    expect(exhaustedUsageWindow(panel, now, "claude-opus-4-6")?.resetsAt).toBe(sessionReset);
+    expect(exhaustedUsageWindow(panel, now, "claude-fable-5")).toBeUndefined();
+    const fableSelection = { instanceId, model: "claude-fable-5" };
+    expect(
+      resolveNewThreadModelSelection({
+        defaultSelection: fableSelection,
+        fallbackSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-6" },
+        providers: [
+          panel,
+          provider({ instanceId: ProviderInstanceId.make("codex"), driver: ProviderDriverKind.make("codex") }),
+        ],
+        now,
+      }).selection,
+    ).toEqual(fableSelection);
+  });
+
+  it("reuses the CLIProxy panel reset when the event has no unix-seconds resetsAt", () => {
+    const stored = provider({
+      instanceId,
+      driver: claude,
+      usageLimits: { checkedAt, windows: [{ ...session, resetsAt: undefined }] },
+    });
+    expect(
+      composerUsageResetFromPanel({
+        reportedResetAt: null,
+        providers: [stored],
+        sources,
+        instanceId,
+        model: "claude-opus-4-6",
+        now,
+      }),
+    ).toBe(sessionReset);
+    const fromWindow = usageResetAtFromRateLimit({
+      status: "rejected",
+      rateLimitType: "five_hour",
+      window: { resets_at: sessionReset },
+    });
+    expect(fromWindow).not.toBeNull();
+    expect(Date.parse(fromWindow ?? "")).toBe(Date.parse(sessionReset));
+    const fromText = usageResetAtFromRateLimit({ resetsAt: sessionReset });
+    expect(Date.parse(fromText ?? "")).toBe(Date.parse(sessionReset));
+    expect(
+      composerUsageResetFromPanel({
+        reportedResetAt: null,
+        eventResetsAt: { window: { resets_at: sessionReset } },
+        providers: [stored],
+        sources: [],
+        instanceId,
+        model: "claude-opus-4-6",
+        now,
+      }),
+    ).toBe(fromWindow);
+  });
 });
 
 describe("pace", () => {

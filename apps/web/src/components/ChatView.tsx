@@ -1,7 +1,10 @@
 import { ChildThreadApprovals } from "./chat/ChildThreadApprovals";
 import { workspaceAreaProps } from "../lib/workspaceFocus";
 import { sourceControlClients } from "@t3tools/client-runtime/source-control-clients";
-import { resolveNewThreadModelSelection } from "@t3tools/shared/usageLimits";
+import {
+  composerUsageResetFromPanel,
+  resolveNewThreadModelSelection,
+} from "@t3tools/shared/usageLimits";
 import { queuedRunEditBlockedReason } from "@t3tools/client-runtime/queued-run-edit";
 import { ScrollToEndButton, WorkspaceFileDropOverlay } from "./chat/TimelineOverlays";
 import { usePasteToFocusComposer } from "./chat/usePasteToFocusComposer";
@@ -2559,7 +2562,15 @@ export default function ChatView(props: ChatViewProps) {
       ? usageLimitRecoveryBannerItem({
           runId: limitRecoveryRun.runId,
           errorCode: serverRuntime?.lastErrorCode ?? null,
-          resetAt: serverRuntime?.usageLimitResetAt ?? null,
+          resetAt: composerUsageResetFromPanel({
+            reportedResetAt: serverRuntime?.usageLimitResetAt ?? null,
+            providers: providerStatuses,
+            sources: serverConfig?.usageLimitSources ?? EMPTY_USAGE_LIMIT_SOURCES,
+            instanceId:
+              activeRuntime?.providerInstanceId ?? activeThread?.modelSelection.instanceId ?? null,
+            model: activeThread?.modelSelection.model,
+            now: Date.now(),
+          }),
           stoppedAt: limitRecoveryRun.completedAt ?? activeThreadShell.updatedAt,
           settled: activeThreadShell.settledOverride === "settled",
           requestPending: pendingApprovals.length > 0 || pendingUserInputs.length > 0,

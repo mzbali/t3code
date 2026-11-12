@@ -85,6 +85,7 @@ import { AgentScope } from "@t3tools/shared/AgentScope";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { applyClaudePromptEffortPrefix } from "@t3tools/shared/model";
 import { compareSemverVersions } from "@t3tools/shared/semver";
+import { usageResetAtFromRateLimit } from "@t3tools/shared/usageLimits";
 import {
   CLAUDE_RESUME_COMPACTION_COMPACT_ANSWER,
   CLAUDE_RESUME_COMPACTION_NEVER_ANSWER,
@@ -4378,10 +4379,7 @@ const isClaudeBlockedAssistantRateLimit = Schema.is(
 );
 
 function claudeUsageLimitResetAt(resetsAt: unknown): string | null {
-  const resetMs = typeof resetsAt === "number" ? resetsAt * 1000 : NaN;
-  return Number.isFinite(resetMs) && resetMs > 0 && resetMs < 8.64e15
-    ? DateTime.formatIso(DateTime.makeUnsafe(resetMs))
-    : null;
+  return usageResetAtFromRateLimit(resetsAt);
 }
 
 function gatewayCooldownResetAt(
@@ -4624,7 +4622,8 @@ function describeClaudeUsageLimit(
       : info.rateLimitType
         ? CLAUDE_USAGE_LIMIT_WINDOWS[info.rateLimitType]
         : undefined;
-  const resetsAtMs = info.resetsAt === undefined ? undefined : info.resetsAt * 1000;
+  const parsedReset = usageResetAtFromRateLimit(info);
+  const resetsAtMs = parsedReset === null ? undefined : Date.parse(parsedReset);
   const waitMs =
     resetsAtMs === undefined || !Number.isFinite(nowMs) ? undefined : resetsAtMs - nowMs;
   const wait =

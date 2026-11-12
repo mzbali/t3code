@@ -15,6 +15,7 @@ import {
   makeUnavailableUsageLimits,
   makeUsageLimits,
 } from "@t3tools/provider-core/server/usageLimits";
+import { usageResetAtFromRateLimit } from "@t3tools/shared/usageLimits";
 
 const SESSION_MINS = 5 * 60;
 const WEEK_MINS = 7 * 24 * 60;
@@ -125,12 +126,6 @@ function readModelScoped(rateLimits: object): ReadonlyArray<ModelScopedWindow> {
   );
 }
 
-function isoFromEpochSeconds(value: number | undefined): string | undefined {
-  if (value === undefined || !Number.isFinite(value) || value <= 0) return undefined;
-  const dt = DateTime.make(value * 1000);
-  return Option.isSome(dt) ? DateTime.formatIso(dt.value) : undefined;
-}
-
 function isoFromString(value: string | null | undefined): string | undefined {
   if (!value) return undefined;
   const dt = DateTime.make(value);
@@ -161,7 +156,7 @@ export function claudeRateLimitEventToUpdate(
     return undefined;
   }
   const usedPercent = info.utilization * 100;
-  const resetsAt = isoFromEpochSeconds(info.resetsAt);
+  const resetsAt = usageResetAtFromRateLimit(info) ?? undefined;
   if (type in WINDOWS) {
     return { windows: [makeWindow(type, usedPercent, resetsAt)] };
   }

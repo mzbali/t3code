@@ -23,8 +23,69 @@ const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
 const DAY = 24 * HOUR;
 
+/** Unix seconds, unix milliseconds, or an ISO timestamp. */
+export function parseUsageResetAt(value: unknown): string | null {
+  if (typeof value === "number") {
+    if (!Number.isFinite(value) || value <= 0 || value >= 8.64e15) return null;
+    const ms = value < 1e11 ? value * 1000 : value;
+    if (ms <= 0 || ms >= 8.64e15) return null;
+    return DateTime.formatIso(DateTime.makeUnsafe(ms));
+  }
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (trimmed.length === 0) return null;
+  if (/^\d+(\.\d+)?$/.test(trimmed)) return parseUsageResetAt(Number(trimmed));
+  const ms = Date.parse(trimmed);
+  if (!Number.isFinite(ms) || ms <= 0 || ms >= 8.64e15) return null;
+  return DateTime.formatIso(DateTime.makeUnsafe(ms));
+}
+
+/** A rate-limit payload may carry `resetsAt` as seconds or text, or only a window `resets_at`. */
+export function usageResetAtFromRateLimit(info: unknown): string | null {
+  if (!info || typeof info !== "object") return parseUsageResetAt(info);
+  const record = info as { resetsAt?: unknown; resets_at?: unknown; window?: unknown };
+  const direct = parseUsageResetAt(record.resetsAt) ?? parseUsageResetAt(record.resets_at);
+  if (direct) return direct;
+  const window = record.window;
+  if (!window || typeof window !== "object") return null;
+  const nested = window as { resetsAt?: unknown; resets_at?: unknown };
+  return parseUsageResetAt(nested.resetsAt) ?? parseUsageResetAt(nested.resets_at);
+}
+
+function claudeScopedWindow(window: ServerProviderUsageWindow): boolean {
+  return window.id.startsWith("seven_day_");
+}
+
+function modelOwnsClaudeWindow(model: string, window: ServerProviderUsageWindow): boolean {
+  const suffix = window.id.slice("seven_day_".length).replace(/[^a-z0-9]/g, "");
+  if (suffix.length < 3) return false;
+  return model.toLowerCase().replace(/[^a-z0-9]/g, "").includes(suffix);
+}
+
+/** A model with its own pool, such as Fable weekly, is not blocked by another window. */
+function claudeExhaustedWindow(
+  exhausted: readonly ServerProviderUsageWindow[],
+  windows: readonly ServerProviderUsageWindow[],
+  model: string | undefined,
+): ServerProviderUsageWindow | undefined {
+  if (model !== undefined) {
+    const own = windows.filter(
+      (window) => claudeScopedWindow(window) && modelOwnsClaudeWindow(model, window),
+    );
+    if (own.length > 0) {
+      return exhausted.find((window) => own.some((candidate) => candidate.id === window.id));
+    }
+  }
+  return exhausted.find((window) => !claudeScopedWindow(window));
+}
+
 export function exhaustedUsageWindow(
-  provider: ServerProvider | undefined,
+  provider:
+    | {
+        readonly driver?: ServerProvider["driver"];
+        readonly usageLimits?: { readonly windows: readonly ServerProviderUsageWindow[] };
+      }
+    | undefined,
   now: number,
   model?: string,
 ) {
@@ -40,6 +101,9 @@ export function exhaustedUsageWindow(
         !Number.isFinite(Date.parse(window.resetsAt)) ||
         Date.parse(window.resetsAt) > now),
   );
+  if (provider?.driver === "claudeAgent") {
+    return claudeExhaustedWindow(exhausted, windows, model);
+  }
   if (model === undefined) return exhausted[0];
   switch (provider?.driver) {
     case "cursor": {
@@ -112,6 +176,58 @@ export function resolveNewThreadModelSelection(input: {
     selection: input.fallbackSelection,
     fallback: { provider, resetsAt: window.resetsAt ?? null },
   };
+}
+
+interface UsageResetAccount {
+  readonly driver: ServerProvider["driver"];
+  readonly windows: readonly ServerProviderUsageWindow[];
+}
+
+/**
+ * The composer shows this when a rate-limit event has no usable timestamp.
+ * CLIProxy accounts live on the usage-limit source the quota panel already read.
+ * The soonest reset wins when more than one account's matching window is empty.
+ */
+export function composerUsageResetFromPanel(input: {
+  readonly reportedResetAt?: string | null;
+  readonly eventResetsAt?: unknown;
+  readonly providers: readonly {
+    readonly instanceId: ProviderInstanceId;
+    readonly driver: ServerProvider["driver"];
+    readonly usageLimits?: { readonly windows: readonly ServerProviderUsageWindow[] } | undefined;
+  }[];
+  readonly sources: UsageLimitSourceSnapshots;
+  readonly instanceId?: ProviderInstanceId | null;
+  readonly model?: string | null;
+  readonly now: number;
+}): string | null {
+  if (input.reportedResetAt && parseUsageResetAt(input.reportedResetAt)) {
+    return input.reportedResetAt;
+  }
+  const fromEvent = usageResetAtFromRateLimit(input.eventResetsAt);
+  if (fromEvent) return fromEvent;
+  const provider = input.providers.find((entry) => entry.instanceId === input.instanceId);
+  const driver = provider?.driver;
+  if (!driver) return null;
+  const accounts: UsageResetAccount[] = [];
+  if (provider.usageLimits) accounts.push({ driver, windows: provider.usageLimits.windows });
+  for (const source of input.sources) {
+    for (const account of source.accounts) {
+      if (account.driver !== driver) continue;
+      accounts.push({ driver: account.driver, windows: account.usageLimits.windows });
+    }
+  }
+  const model = input.model ?? undefined;
+  const resets = accounts.flatMap((account) => {
+    const at = exhaustedUsageWindow(
+      { driver: account.driver, usageLimits: { windows: account.windows } },
+      input.now,
+      model,
+    )?.resetsAt;
+    return at && Number.isFinite(Date.parse(at)) ? [at] : [];
+  });
+  resets.sort((left, right) => Date.parse(left) - Date.parse(right));
+  return resets[0] ?? null;
 }
 
 export const CHATGPT_USAGE_URL = "https://chatgpt.com/#settings/Usage";
